@@ -98,31 +98,40 @@ def _preview_instructions(
     repo_root: Path,
     section: str,
     marker: str,
-    platform_files: dict[str, str],
+    platform_files: dict[str, tuple[str, ...]],
+    *,
+    target: str = "all",
 ) -> list[str]:
     """Print a preview of files that would be modified by instruction injection.
+
+    Args:
+        target: Platform filter — ``"all"`` checks every file, ``"claude"``
+            checks only CLAUDE.md, other values filter platform_files by owner.
 
     Returns list of file names that would be modified (not already containing
     the marker).
     """
     targets: list[str] = []
 
-    claude_md = repo_root / "CLAUDE.md"
-    if claude_md.exists():
-        content = claude_md.read_text(encoding="utf-8")
-        if marker not in content:
-            targets.append("CLAUDE.md")
-    else:
-        targets.append("CLAUDE.md (new)")
+    if target in ("claude", "all"):
+        claude_md = repo_root / "CLAUDE.md"
+        if claude_md.exists():
+            content = claude_md.read_text(encoding="utf-8")
+            if marker not in content:
+                targets.append("CLAUDE.md")
+        else:
+            targets.append("CLAUDE.md (new)")
 
-    for label, filename in platform_files.items():
+    for filename, owners in platform_files.items():
+        if target != "all" and target not in owners:
+            continue
         path = repo_root / filename
         if path.exists():
             content = path.read_text(encoding="utf-8")
             if marker not in content:
-                targets.append(label)
+                targets.append(filename)
         else:
-            targets.append(f"{label} (new)")
+            targets.append(f"{filename} (new)")
 
     if targets:
         print(f"\nGraph instructions will be appended to: {', '.join(targets)}")
@@ -196,7 +205,7 @@ def _handle_init(args: argparse.Namespace) -> None:
         # Show what would be injected into instruction files
         _preview_instructions(
             repo_root, _CLAUDE_MD_SECTION, _CLAUDE_MD_SECTION_MARKER,
-            _PLATFORM_INSTRUCTION_FILES,
+            _PLATFORM_INSTRUCTION_FILES, target=target,
         )
         print("\n[dry-run] No files were modified.")
         return
@@ -209,13 +218,14 @@ def _handle_init(args: argparse.Namespace) -> None:
         # Preview and confirm before injecting into checked-in files
         targets = _preview_instructions(
             repo_root, _CLAUDE_MD_SECTION, _CLAUDE_MD_SECTION_MARKER,
-            _PLATFORM_INSTRUCTION_FILES,
+            _PLATFORM_INSTRUCTION_FILES, target=target,
         )
         if targets:
             if auto_yes or _confirm_inject(targets):
-                inject_claude_md(repo_root)
-                updated = inject_platform_instructions(repo_root)
-                injected = ["CLAUDE.md"] + updated if (repo_root / "CLAUDE.md").exists() else updated
+                if target in ("claude", "all"):
+                    inject_claude_md(repo_root)
+                updated = inject_platform_instructions(repo_root, target=target)
+                injected = (["CLAUDE.md"] if target in ("claude", "all") else []) + updated
                 if injected:
                     print(f"Injected graph instructions into: {', '.join(injected)}")
             else:
@@ -225,7 +235,7 @@ def _handle_init(args: argparse.Namespace) -> None:
     else:
         print("Skipped instruction injection (--no-instructions)")
 
-    if not skip_hooks:
+    if not skip_hooks and target in ("claude", "all"):
         install_hooks(repo_root)
         print(f"Installed hooks in {repo_root / '.claude' / 'settings.json'}")
 
