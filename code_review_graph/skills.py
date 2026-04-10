@@ -334,8 +334,10 @@ def generate_skills(repo_root: Path, skills_dir: Path | None = None) -> Path:
 def generate_hooks_config() -> dict[str, Any]:
     """Generate Claude Code hooks configuration.
 
-    Returns a hooks config dict with PostToolUse, SessionStart, and
-    PreCommit hooks for automatic graph updates.
+    Returns a hooks config dict with PostToolUse and SessionStart hooks
+    for automatic graph updates. Each event entry wraps its command in the
+    Claude Code hook schema:
+    ``hooks: [{"type": "command", "command": ..., "timeout": ...}]``.
 
     Returns:
         Dict with hooks configuration suitable for .claude/settings.json.
@@ -344,21 +346,25 @@ def generate_hooks_config() -> dict[str, Any]:
         "hooks": {
             "PostToolUse": [
                 {
-                    "matcher": "Edit|Write|Bash",
-                    "command": "code-review-graph update --skip-flows",
-                    "timeout": 5000,
+                    "matcher": "Edit|Write",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "code-review-graph update --skip-flows",
+                            "timeout": 5000,
+                        },
+                    ],
                 },
             ],
             "SessionStart": [
                 {
-                    "command": "code-review-graph status",
-                    "timeout": 3000,
-                },
-            ],
-            "PreCommit": [
-                {
-                    "command": "code-review-graph detect-changes --brief",
-                    "timeout": 10000,
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "code-review-graph status",
+                            "timeout": 3000,
+                        },
+                    ],
                 },
             ],
         }
@@ -368,8 +374,9 @@ def generate_hooks_config() -> dict[str, Any]:
 def install_hooks(repo_root: Path) -> None:
     """Write hooks config to .claude/settings.json.
 
-    Merges with existing settings if present, preserving non-hook
-    configuration.
+    Merges new hook entries into existing settings, preserving both
+    non-hook configuration and user-defined hooks.  A backup of the
+    original file is created before any modifications.
 
     Args:
         repo_root: Repository root directory.
@@ -382,11 +389,30 @@ def install_hooks(repo_root: Path) -> None:
     if settings_path.exists():
         try:
             existing = json.loads(settings_path.read_text(encoding="utf-8"))
+            backup_path = settings_dir / "settings.json.bak"
+            shutil.copy2(settings_path, backup_path)
+            logger.info("Backed up existing settings to %s", backup_path)
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Could not read existing %s: %s", settings_path, exc)
 
     hooks_config = generate_hooks_config()
-    existing.update(hooks_config)
+    existing_hooks = existing.get("hooks", {})
+    if not isinstance(existing_hooks, dict):
+        logger.warning("Existing hooks config is not a dict; replacing with defaults")
+        existing_hooks = {}
+
+    merged_hooks = dict(existing_hooks)
+    for hook_name, hook_entries in hooks_config.get("hooks", {}).items():
+        if isinstance(merged_hooks.get(hook_name), list):
+            merged_list = list(merged_hooks[hook_name])
+            for entry in hook_entries:
+                if entry not in merged_list:
+                    merged_list.append(entry)
+            merged_hooks[hook_name] = merged_list
+        else:
+            merged_hooks[hook_name] = hook_entries
+
+    existing["hooks"] = merged_hooks
 
     settings_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
     logger.info("Wrote hooks config: %s", settings_path)
